@@ -44,6 +44,7 @@ CATEGORIES = {
     "99": "소모품"
 }
 
+@st.cache_data
 def safe_convert_to_string(value):
     """안전하게 값을 문자열로 변환 (float 오류 방지)"""
     try:
@@ -59,6 +60,7 @@ def safe_convert_to_string(value):
     except Exception:
         return str(value) if value is not None else ""
 
+@st.cache_data
 def safe_convert_to_numeric(value, default=0):
     """안전하게 숫자로 변환"""
     try:
@@ -86,7 +88,7 @@ def clean_dataframe(df):
 def process_excel_file(uploaded_file, file_type="재고"):
     """엑셀 파일 처리 함수 (오류 방지 강화)"""
     try:
-        # 파일 읽기
+        # 파일 읽기 - openpyxl 엔진 사용
         df = pd.read_excel(uploaded_file, engine='openpyxl')
         
         # 데이터프레임 정리
@@ -314,7 +316,7 @@ def main():
     with st.sidebar:
         st.markdown("### 📋 시스템 메뉴")
         
-        # 메뉴 선택 (키 없이)
+        # 메뉴 선택
         menu_options = [
             "🏠 대시보드", 
             "📦 재고조회", 
@@ -356,13 +358,13 @@ def main():
                 st.success("✅ 모든 상품 재고 확보")
         else:
             st.info("📝 재고 데이터를 등록해주세요")
-        
-        # 최근 거래
-        if not st.session_state.transaction_history.empty:
-            st.markdown("### 🕒 최근 거래")
-            recent = st.session_state.transaction_history.tail(3)
-            for _, row in recent.iterrows():
-                st.text(f"{row['거래유형']}: {row['상품명'][:10]}...")
+            
+        # 시스템 정보
+        st.markdown("---")
+        st.markdown("### ℹ️ 시스템 정보")
+        st.caption("버전: 2.1.0")
+        st.caption("배포: Streamlit Cloud")
+        st.caption("업데이트: 실시간")
     
     # 메인 컨텐츠 - 선택된 메뉴에 따라 표시
     if selected_menu == "🏠 대시보드":
@@ -385,9 +387,45 @@ def show_dashboard():
     if st.session_state.inventory_data.empty:
         st.warning("📝 재고 데이터가 없습니다. 파일을 업로드하거나 직접 입력해주세요.")
         
-        st.info("👈 시작하려면 사이드바에서 다음 중 선택하세요:")
-        st.markdown("- **📁 파일업로드**: 엑셀 파일로 재고 데이터 업로드")
-        st.markdown("- **✏️ 직접입력**: 수동으로 상품 정보 입력")
+        # 시작 가이드
+        st.markdown("### 🚀 시작하기")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            #### 📁 파일 업로드 방식
+            - 기존 엑셀 재고 파일 업로드
+            - 대량 데이터 한 번에 입력
+            - 빠른 시스템 구축
+            
+            👈 **사이드바 > 📁 파일업로드** 선택
+            """)
+            
+        with col2:
+            st.markdown("""
+            #### ✏️ 직접 입력 방식  
+            - 상품별 개별 입력
+            - 정확한 데이터 관리
+            - 단계별 시스템 구축
+            
+            👈 **사이드바 > ✏️ 직접입력** 선택
+            """)
+        
+        # 데모 데이터 생성 옵션
+        st.markdown("---")
+        st.markdown("### 🎯 빠른 체험")
+        if st.button("📋 데모 데이터 생성", type="primary"):
+            demo_data = pd.DataFrame({
+                '상품코드': ['8801234567890', '8801234567891', '8801234567892'],
+                '상품명': ['삼각김밥 참치마요', '삼각김밥 불고기', '컵라면 신라면'],
+                '대분류': ['02', '02', '14'],
+                '매가': [1200, 1300, 1800],
+                '재고수량': [15, 12, 25],
+                '최종수정일': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')] * 3
+            })
+            st.session_state.inventory_data = demo_data
+            st.success("✅ 데모 데이터가 생성되었습니다!")
+            st.rerun()
         
         return
     
@@ -510,14 +548,16 @@ def show_file_upload():
     """파일 업로드 화면"""
     st.header("📁 파일 업로드")
     
+    # 업로드 안내
+    st.info("💡 엑셀 파일(.xlsx)을 업로드하여 재고 데이터를 관리할 수 있습니다.")
+    
     tab1, tab2, tab3, tab4 = st.tabs(["📦 재고 파일", "📈 입고 파일", "💰 판매 파일", "🗑️ 폐기 파일"])
     
     with tab1:
         st.subheader("📦 재고 데이터 업로드")
-        st.info("💡 기존 재고 데이터를 업로드하여 시스템을 초기화합니다.")
         
         # 파일 형식 안내
-        with st.expander("📋 파일 형식 안내"):
+        with st.expander("📋 파일 형식 안내", expanded=True):
             st.markdown("""
             **필수 컬럼:**
             - `상품코드`: 상품의 고유 코드
@@ -526,13 +566,15 @@ def show_file_upload():
             **선택 컬럼:**
             - `매가`: 상품 가격 (기본값: 0)
             - `재고수량` 또는 `이월수량`: 현재 재고량 (기본값: 0)
+            
+            **지원 형식:** .xlsx (Excel 2007 이상)
             """)
         
         inventory_file = st.file_uploader(
-            "재고 파일 선택 (.xlsx, .xls)",
-            type=['xlsx', 'xls'],
+            "재고 파일 선택",
+            type=['xlsx'],
             key="inventory_file",
-            help="엑셀 파일을 선택해주세요"
+            help="Excel 파일(.xlsx)만 지원됩니다"
         )
         
         if inventory_file:
@@ -583,10 +625,10 @@ def upload_transaction_tab(transaction_type, icon, description):
         return
     
     transaction_file = st.file_uploader(
-        f"{transaction_type} 파일 선택 (.xlsx, .xls)",
-        type=['xlsx', 'xls'],
+        f"{transaction_type} 파일 선택",
+        type=['xlsx'],
         key=f"{transaction_type}_file",
-        help="엑셀 파일을 선택해주세요"
+        help="Excel 파일(.xlsx)을 선택해주세요"
     )
     
     if transaction_file:
@@ -598,7 +640,12 @@ def upload_transaction_tab(transaction_type, icon, description):
                     success_count = 0
                     fail_count = 0
                     
-                    for _, row in processed_df.iterrows():
+                    progress_bar = st.progress(0)
+                    total_rows = len(processed_df)
+                    
+                    for idx, row in processed_df.iterrows():
+                        progress_bar.progress((idx + 1) / total_rows)
+                        
                         product_code = safe_convert_to_string(row['상품코드'])
                         quantity = safe_convert_to_numeric(row['수량'], 0)
                         
@@ -615,6 +662,8 @@ def upload_transaction_tab(transaction_type, icon, description):
                             success_count += 1
                         else:
                             fail_count += 1
+                    
+                    progress_bar.empty()
                     
                     # 결과 표시
                     col1, col2 = st.columns(2)
@@ -811,7 +860,7 @@ def show_transaction_history():
             selected_type = st.selectbox("거래 유형", transaction_types)
         
         with col2:
-            start_date = st.date_input("시작 날짜", datetime.now().date() - pd.Timedelta(days=30))
+            start_date = st.date_input("시작 날짜", datetime.now().date() - pd.Timedelta(days=7))
         
         with col3:
             end_date = st.date_input("종료 날짜", datetime.now().date())
@@ -1063,7 +1112,7 @@ def show_footer():
         <div style='text-align: center; color: gray; font-size: 0.9em; padding: 1rem 0;'>
         🏪 <strong>GS25 편의점 재고관리 시스템</strong> | 
         Made with ❤️ using Streamlit | 
-        버전 2.0.0 (안정화)
+        버전 2.1.0 (Cloud 최적화)
         </div>
         """, 
         unsafe_allow_html=True
