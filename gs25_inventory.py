@@ -1,978 +1,984 @@
+# -*- coding: utf-8 -*-
+"""
+GS25 편의점 재고관리 시스템 (개선된 버전)
+- 중분류 기반 상품 분류 (93개 카테고리)
+- AI 기반 재고 추천 시스템
+- 요일별/월별 데이터 분석
+- 실시간 발주 관리
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
-import io
-import openpyxl
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import io
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
 import warnings
-import traceback
+import logging
+
 warnings.filterwarnings('ignore')
 
-# 페이지 설정
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ================================
+# 시스템 설정 및 상수
+# ================================
+
 st.set_page_config(
-    page_title="GS25 재고관리 시스템",
+    page_title="GS25 재고관리",
     page_icon="🏪",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 대분류 카테고리 정의
+# 중분류 카테고리 (93개)
 CATEGORIES = {
-    "01": "FreshFood",
-    "02": "간편식품", 
-    "03": "조리식품",
-    "04": "냉장식품",
-    "05": "채소",
-    "06": "과일",
-    "07": "축산",
-    "08": "수산",
-    "09": "유제품",
-    "10": "빙과류",
-    "11": "음료",
-    "12": "주류",
-    "13": "과자",
-    "14": "일반식품",
-    "15": "서비스",
-    "16": "헬스",
-    "17": "뷰티",
-    "18": "일상용품",
-    "19": "심플리쿡",
-    "20": "미식일상",
-    "21": "Other Business",
-    "99": "소모품"
+    "00": "중분류 전체", "01": "도시락", "02": "김밥", "03": "주먹밥",
+    "04": "햄버거/샌드위치", "05": "카운터FF", "06": "FF간편식", "07": "냉장간편식품",
+    "08": "냉동간편식품", "09": "빵류", "10": "점내조리", "11": "특정판매",
+    "12": "외주조리", "13": "육가공", "14": "어묵/맛살", "15": "두부/나물",
+    "16": "근채", "17": "과채", "18": "엽채", "19": "양념",
+    "20": "샐러드", "21": "버섯", "22": "김치", "23": "나물",
+    "24": "양곡", "25": "채소가공", "26": "국산과일", "27": "수입과일",
+    "28": "건과", "29": "과일가공", "30": "국산돈육", "31": "계육/계란",
+    "32": "국산우육", "33": "수입육", "34": "축산가공", "35": "어류",
+    "36": "해물", "37": "건어", "38": "수산가공", "39": "우유",
+    "40": "발효유", "41": "냉장음료", "42": "치즈/버터", "43": "아이스크림",
+    "44": "얼음", "45": "커피/차음료", "46": "기능성음료", "47": "탄산음료",
+    "48": "생수/탄산수", "49": "주스", "50": "맥주", "51": "소주/전통주",
+    "52": "양주/와인", "53": "스낵", "54": "쿠키/샌드", "55": "캔디/껌",
+    "56": "초콜릿", "57": "안주", "58": "면류", "59": "즉석식품",
+    "60": "커피/차", "61": "조미료", "62": "통조림", "63": "씨리얼/유아식",
+    "64": "식용유/참기름", "65": "담배", "66": "서비스상품", "67": "개인위생",
+    "68": "의약/의료", "69": "건강", "70": "헤어/바디용품", "71": "화장품",
+    "72": "미용소품", "73": "색조화장품(미사용)", "74": "바디용품(미사용)", "75": "생리대/화장지",
+    "76": "생활용품", "77": "문화/가전", "78": "가사용품", "79": "의류용품",
+    "80": "반려동물", "81": "한식", "82": "아시안", "83": "양식",
+    "88": "특정판매/수수료", "89": "연관/세트-비식품", "90": "온라인주류", "91": "수수료상품",
+    "93": "Other Business", "99": "소모품"
 }
 
-def safe_convert_to_string(value):
-    """안전하게 값을 문자열로 변환"""
+# 요일 매핑
+WEEKDAYS = {
+    'Monday': '월요일', 'Tuesday': '화요일', 'Wednesday': '수요일',
+    'Thursday': '목요일', 'Friday': '금요일', 'Saturday': '토요일', 'Sunday': '일요일'
+}
+
+# ================================
+# 데이터 처리 유틸리티 함수
+# ================================
+
+@st.cache_data
+def safe_str_convert(value):
+    """안전한 문자열 변환 (float 오류 방지)"""
     try:
         if pd.isna(value) or value is None:
             return ""
         if isinstance(value, (int, float)):
-            if pd.isna(value) or np.isnan(value):
+            if pd.isna(value) or (isinstance(value, float) and np.isnan(value)):
                 return ""
-            if isinstance(value, float) and value.is_integer():
+            # float의 정수 체크
+            if isinstance(value, float) and value == int(value):
                 return str(int(value))
             return str(value)
         return str(value).strip()
-    except Exception:
-        return str(value) if value is not None else ""
+    except Exception as e:
+        logger.warning(f"String conversion error: {e}")
+        return ""
 
-def safe_convert_to_numeric(value, default=0):
-    """안전하게 숫자로 변환"""
+@st.cache_data
+def safe_num_convert(value, default=0):
+    """안전한 숫자 변환"""
     try:
         if pd.isna(value) or value is None or value == "":
             return default
         if isinstance(value, str):
             value = value.strip()
-            if value == "":
-                return default
+            return default if value == "" else float(value)
         return float(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Number conversion error: {e}")
         return default
 
-def initialize_session_state():
-    """세션 상태 초기화"""
-    if 'inventory_data' not in st.session_state:
-        st.session_state.inventory_data = pd.DataFrame(columns=[
-            '상품코드', '상품명', '대분류', '매가', '재고수량', '추천재고수량', '최종수정일'
-        ])
-    
-    if 'transaction_history' not in st.session_state:
-        st.session_state.transaction_history = pd.DataFrame(columns=[
-            '일시', '거래유형', '상품코드', '상품명', '수량', '변경전재고', '변경후재고', '요일', '월'
-        ])
-    
-    if 'current_page' not in st.session_state:
-        st.session_state.current_page = "🏠 대시보드"
-
-def add_transaction_record(transaction_type, product_code, product_name, quantity, before_qty, after_qty):
-    """거래 내역 추가 (요일/월 정보 포함)"""
+def clean_excel_data(df):
+    """엑셀 데이터 정리"""
     try:
-        now = datetime.now()
-        weekday = now.strftime('%A')  # 요일 (영어)
-        weekday_kr = {'Monday': '월요일', 'Tuesday': '화요일', 'Wednesday': '수요일', 
-                     'Thursday': '목요일', 'Friday': '금요일', 'Saturday': '토요일', 'Sunday': '일요일'}
-        
-        new_record = pd.DataFrame({
-            '일시': [now.strftime('%Y-%m-%d %H:%M:%S')],
-            '거래유형': [transaction_type],
-            '상품코드': [str(product_code)],
-            '상품명': [str(product_name)],
-            '수량': [float(quantity)],
-            '변경전재고': [float(before_qty)],
-            '변경후재고': [float(after_qty)],
-            '요일': [weekday_kr.get(weekday, weekday)],
-            '월': [now.month]
-        })
-        st.session_state.transaction_history = pd.concat(
-            [st.session_state.transaction_history, new_record], 
-            ignore_index=True
-        )
-    except Exception as e:
-        st.error(f"거래 내역 추가 중 오류: {e}")
-
-def process_excel_file(uploaded_file, selected_category="99"):
-    """엑셀 파일 처리 (대분류 지정 포함)"""
-    try:
-        df = pd.read_excel(uploaded_file, engine='openpyxl')
         df = df.fillna("")
         df.columns = [str(col).strip() for col in df.columns]
+        df = df.dropna(how='all').reset_index(drop=True)
+        return df
+    except Exception as e:
+        logger.error(f"Excel data cleaning error: {e}")
+        return df
+
+def process_inventory_excel(file, category_code):
+    """재고 엑셀 파일 처리"""
+    try:
+        # 파일 포인터를 처음으로 되돌림
+        file.seek(0)
+        df = pd.read_excel(file, engine='openpyxl')
+        df = clean_excel_data(df)
         
         if df.empty:
-            st.error("파일에 데이터가 없습니다.")
-            return None
+            return None, "파일에 데이터가 없습니다."
         
         # 필수 컬럼 확인
-        required_columns = ['상품코드', '상품명']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        
-        if missing_columns:
-            st.error(f"필수 컬럼이 없습니다: {missing_columns}")
-            return None
+        required = ['상품코드', '상품명']
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            return None, f"필수 컬럼이 없습니다: {missing}"
         
         # 데이터 변환
-        df['상품코드'] = df['상품코드'].apply(safe_convert_to_string)
-        df['상품명'] = df['상품명'].apply(safe_convert_to_string)
-        df['대분류'] = selected_category  # 사용자가 선택한 대분류 적용
+        result = pd.DataFrame({
+            '상품코드': df['상품코드'].apply(safe_str_convert),
+            '상품명': df['상품명'].apply(safe_str_convert),
+            '중분류': category_code,
+            '매가': df.get('매가', 0).apply(lambda x: safe_num_convert(x, 0)),
+            '재고수량': df.get('재고수량', df.get('이월수량', 0)).apply(lambda x: safe_num_convert(x, 0)),
+            '추천재고수량': df.get('추천재고수량', 0).apply(lambda x: safe_num_convert(x, 0)),
+            '등록일시': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
         
-        # 매가 처리
-        if '매가' in df.columns:
-            df['매가'] = df['매가'].apply(lambda x: safe_convert_to_numeric(x, 0))
-        else:
-            df['매가'] = 0
+        # 추천재고 기본값 설정 (현재 재고의 1.5배, 최소 5개)
+        result.loc[result['추천재고수량'] == 0, '추천재고수량'] = \
+            (result['재고수량'] * 1.5).apply(lambda x: max(int(x), 5))
         
-        # 재고수량 처리
-        if '재고수량' in df.columns:
-            df['재고수량'] = df['재고수량'].apply(lambda x: safe_convert_to_numeric(x, 0))
-        elif '이월수량' in df.columns:
-            df['재고수량'] = df['이월수량'].apply(lambda x: safe_convert_to_numeric(x, 0))
-        else:
-            df['재고수량'] = 0
+        # 유효한 데이터만 필터링
+        result = result[(result['상품코드'] != "") & (result['상품명'] != "")]
         
-        # 추천재고수량 처리 (기본값: 현재 재고의 1.5배)
-        if '추천재고수량' in df.columns:
-            df['추천재고수량'] = df['추천재고수량'].apply(lambda x: safe_convert_to_numeric(x, 0))
-        else:
-            df['추천재고수량'] = (df['재고수량'] * 1.5).round().astype(int)
-        
-        df['최종수정일'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        # 빈 상품코드나 상품명 제거
-        df = df[(df['상품코드'] != "") & (df['상품명'] != "")]
-        
-        return df[['상품코드', '상품명', '대분류', '매가', '재고수량', '추천재고수량', '최종수정일']]
+        return result, None
         
     except Exception as e:
-        st.error(f"파일 처리 중 오류: {e}")
-        return None
+        logger.error(f"File processing error: {e}")
+        return None, f"파일 처리 오류: {str(e)}"
 
-def update_inventory(product_code, quantity_change, transaction_type):
+# ================================
+# 세션 상태 관리
+# ================================
+
+def init_session():
+    """세션 상태 초기화"""
+    defaults = {
+        'inventory': pd.DataFrame(columns=[
+            '상품코드', '상품명', '중분류', '매가', '재고수량', '추천재고수량', '등록일시'
+        ]),
+        'transactions': pd.DataFrame(columns=[
+            '일시', '거래유형', '상품코드', '상품명', '수량', '변경전', '변경후', '요일', '월'
+        ]),
+        'current_menu': '🏠 대시보드',
+        'confirm_inv_reset': False,
+        'confirm_trans_reset': False
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+def add_transaction(trans_type, code, name, qty, before, after):
+    """거래 내역 추가"""
+    try:
+        now = datetime.now()
+        weekday = WEEKDAYS.get(now.strftime('%A'), now.strftime('%A'))
+        
+        new_trans = pd.DataFrame({
+            '일시': [now.strftime('%Y-%m-%d %H:%M:%S')],
+            '거래유형': [trans_type],
+            '상품코드': [str(code)],
+            '상품명': [str(name)],
+            '수량': [abs(qty)],
+            '변경전': [before],
+            '변경후': [after],
+            '요일': [weekday],
+            '월': [now.month]
+        })
+        
+        st.session_state.transactions = pd.concat([
+            st.session_state.transactions, new_trans
+        ], ignore_index=True)
+    except Exception as e:
+        logger.error(f"Transaction addition error: {e}")
+
+def update_stock(code, change, trans_type):
     """재고 업데이트"""
     try:
-        product_code = str(product_code)
+        inventory = st.session_state.inventory
         
-        if product_code in st.session_state.inventory_data['상품코드'].values:
-            idx = st.session_state.inventory_data[
-                st.session_state.inventory_data['상품코드'] == product_code
-            ].index[0]
+        if code in inventory['상품코드'].values:
+            idx = inventory[inventory['상품코드'] == code].index[0]
+            before = inventory.loc[idx, '재고수량']
+            after = max(0, before + change)
             
-            before_qty = float(st.session_state.inventory_data.loc[idx, '재고수량'])
-            after_qty = max(0, before_qty + quantity_change)
+            inventory.loc[idx, '재고수량'] = after
+            inventory.loc[idx, '등록일시'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            st.session_state.inventory_data.loc[idx, '재고수량'] = after_qty
-            st.session_state.inventory_data.loc[idx, '최종수정일'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            product_name = str(st.session_state.inventory_data.loc[idx, '상품명'])
-            add_transaction_record(transaction_type, product_code, product_name, abs(quantity_change), before_qty, after_qty)
-            
+            name = inventory.loc[idx, '상품명']
+            add_transaction(trans_type, code, name, change, before, after)
             return True
         return False
     except Exception as e:
-        st.error(f"재고 업데이트 중 오류: {e}")
+        logger.error(f"Stock update error: {e}")
         return False
 
-def get_low_stock_recommendations():
-    """추천 재고 대비 부족한 상품 목록"""
-    if st.session_state.inventory_data.empty:
+# ================================
+# 분석 및 차트 함수
+# ================================
+
+def get_low_stock_items():
+    """재고 부족 상품 조회"""
+    try:
+        inventory = st.session_state.inventory
+        if inventory.empty:
+            return pd.DataFrame()
+        
+        low_stock = inventory[inventory['재고수량'] < inventory['추천재고수량']].copy()
+        if not low_stock.empty:
+            low_stock['부족수량'] = low_stock['추천재고수량'] - low_stock['재고수량']
+            low_stock['중분류명'] = low_stock['중분류'].map(CATEGORIES)
+            return low_stock.sort_values('부족수량', ascending=False)
         return pd.DataFrame()
-    
-    low_stock = st.session_state.inventory_data[
-        st.session_state.inventory_data['재고수량'] < st.session_state.inventory_data['추천재고수량']
-    ].copy()
-    
-    if not low_stock.empty:
-        low_stock['부족수량'] = low_stock['추천재고수량'] - low_stock['재고수량']
-        low_stock['대분류명'] = low_stock['대분류'].map(CATEGORIES)
-        return low_stock.sort_values('부족수량', ascending=False)
-    
-    return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Low stock items error: {e}")
+        return pd.DataFrame()
 
-def create_sales_analysis_chart():
-    """판매/폐기 데이터 분석 차트"""
-    if st.session_state.transaction_history.empty:
-        return None, None
-    
-    # 판매/폐기 데이터만 필터링
-    sales_disposal = st.session_state.transaction_history[
-        st.session_state.transaction_history['거래유형'].isin(['판매', '폐기'])
-    ].copy()
-    
-    if sales_disposal.empty:
-        return None, None
-    
-    # 요일별 분석
-    weekday_analysis = sales_disposal.groupby(['요일', '거래유형'])['수량'].sum().reset_index()
-    weekday_order = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
-    weekday_analysis['요일'] = pd.Categorical(weekday_analysis['요일'], categories=weekday_order, ordered=True)
-    weekday_analysis = weekday_analysis.sort_values('요일')
-    
-    # 월별 분석
-    monthly_analysis = sales_disposal.groupby(['월', '거래유형'])['수량'].sum().reset_index()
-    
-    # 요일별 차트
-    fig_weekday = px.bar(
-        weekday_analysis, 
-        x='요일', 
-        y='수량', 
-        color='거래유형',
-        title='요일별 판매/폐기 현황',
-        color_discrete_map={'판매': '#2E86AB', '폐기': '#F24236'}
-    )
-    fig_weekday.update_layout(height=400)
-    
-    # 월별 차트
-    fig_monthly = px.line(
-        monthly_analysis, 
-        x='월', 
-        y='수량', 
-        color='거래유형',
-        title='월별 판매/폐기 트렌드',
-        markers=True,
-        color_discrete_map={'판매': '#2E86AB', '폐기': '#F24236'}
-    )
-    fig_monthly.update_layout(height=400)
-    
-    return fig_weekday, fig_monthly
-
-def create_category_analysis_chart():
-    """대분류별 재고 현황 차트"""
-    if st.session_state.inventory_data.empty:
+def create_category_chart():
+    """중분류별 재고 구성 차트"""
+    try:
+        inventory = st.session_state.inventory
+        if inventory.empty or len(inventory) == 0:
+            return None
+        
+        stats = inventory.groupby('중분류').agg({
+            '재고수량': ['count', 'sum']
+        }).round(2)
+        stats.columns = ['상품수', '총재고']
+        stats['중분류명'] = stats.index.map(CATEGORIES)
+        stats = stats.reset_index()
+        
+        fig = px.pie(stats, values='상품수', names='중분류명', 
+                    title='중분류별 상품 구성', hole=0.4)
+        fig.update_layout(height=400)
+        return fig
+    except Exception as e:
+        logger.error(f"Category chart error: {e}")
         return None
-    
-    category_stats = st.session_state.inventory_data.groupby('대분류').agg({
-        '재고수량': ['count', 'sum'],
-        '추천재고수량': 'sum'
-    }).round(2)
-    
-    category_stats.columns = ['상품수', '현재재고', '추천재고']
-    category_stats['대분류명'] = category_stats.index.map(CATEGORIES)
-    category_stats = category_stats.reset_index()
-    
-    # 도넛 차트로 대분류별 상품 수 표시
-    fig = px.pie(
-        category_stats, 
-        values='상품수', 
-        names='대분류명',
-        title='대분류별 상품 구성비',
-        hole=0.4
-    )
-    fig.update_layout(height=500)
-    
-    return fig
 
-def main():
-    initialize_session_state()
-    
-    # 메인 헤더
+def create_weekday_chart():
+    """요일별 판매/폐기 분석"""
+    try:
+        trans = st.session_state.transactions
+        if trans.empty:
+            return None
+        
+        # 판매/폐기 데이터만 필터링
+        sales_data = trans[trans['거래유형'].isin(['판매', '폐기'])]
+        if sales_data.empty:
+            return None
+        
+        weekday_stats = sales_data.groupby(['요일', '거래유형'])['수량'].sum().reset_index()
+        
+        # 요일 순서 정렬
+        weekday_order = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
+        weekday_stats['요일'] = pd.Categorical(weekday_stats['요일'], categories=weekday_order, ordered=True)
+        weekday_stats = weekday_stats.sort_values('요일')
+        
+        fig = px.bar(weekday_stats, x='요일', y='수량', color='거래유형',
+                    title='요일별 판매/폐기 현황', 
+                    color_discrete_map={'판매': '#2E86AB', '폐기': '#F24236'})
+        fig.update_layout(height=400)
+        return fig
+    except Exception as e:
+        logger.error(f"Weekday chart error: {e}")
+        return None
+
+def create_monthly_chart():
+    """월별 트렌드 분석"""
+    try:
+        trans = st.session_state.transactions
+        if trans.empty:
+            return None
+        
+        sales_data = trans[trans['거래유형'].isin(['판매', '폐기'])]
+        if sales_data.empty:
+            return None
+        
+        monthly_stats = sales_data.groupby(['월', '거래유형'])['수량'].sum().reset_index()
+        
+        fig = px.line(monthly_stats, x='월', y='수량', color='거래유형',
+                     title='월별 판매/폐기 트렌드', markers=True,
+                     color_discrete_map={'판매': '#2E86AB', '폐기': '#F24236'})
+        fig.update_layout(height=400)
+        return fig
+    except Exception as e:
+        logger.error(f"Monthly chart error: {e}")
+        return None
+
+def create_category_performance_chart():
+    """중분류별 판매 성과"""
+    try:
+        trans = st.session_state.transactions
+        inventory = st.session_state.inventory
+        
+        if trans.empty or inventory.empty:
+            return None
+        
+        # 상품코드별 중분류 매핑
+        category_map = inventory.set_index('상품코드')['중분류'].to_dict()
+        sales_data = trans[trans['거래유형'] == '판매'].copy()
+        sales_data['중분류'] = sales_data['상품코드'].map(category_map)
+        sales_data['중분류명'] = sales_data['중분류'].map(CATEGORIES)
+        
+        category_sales = sales_data.groupby('중분류명')['수량'].sum().reset_index()
+        category_sales = category_sales.sort_values('수량', ascending=True)
+        
+        fig = px.bar(category_sales, x='수량', y='중분류명', orientation='h',
+                    title='중분류별 총 판매량', color='수량', color_continuous_scale='Blues')
+        fig.update_layout(height=600)
+        return fig
+    except Exception as e:
+        logger.error(f"Category performance chart error: {e}")
+        return None
+
+# ================================
+# UI 컴포넌트
+# ================================
+
+def render_header():
+    """헤더 렌더링"""
     st.markdown("""
-    <div style='text-align: center; padding: 1rem 0;'>
-        <h1 style='color: #366092; margin-bottom: 0;'>🏪 GS25 편의점 재고관리 시스템</h1>
-        <p style='color: #666; margin-top: 0;'>AI 기반 재고 최적화 및 데이터 분석</p>
+    <div style='text-align: center; padding: 1.5rem 0; background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); 
+                border-radius: 10px; margin-bottom: 2rem; color: white;'>
+        <h1 style='margin: 0; font-size: 2.5rem;'>🏪 GS25 재고관리 시스템</h1>
+        <p style='margin: 0.5rem 0 0 0; font-size: 1.2rem; opacity: 0.9;'>
+            중분류 기반 AI 재고 최적화 & 데이터 분석 플랫폼
+        </p>
     </div>
     """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # 사이드바
+
+def render_sidebar():
+    """사이드바 렌더링"""
     with st.sidebar:
         st.markdown("### 📋 시스템 메뉴")
         
         menu_options = [
-            "🏠 대시보드", 
+            "🏠 대시보드",
             "📦 재고관리", 
-            "📁 파일업로드", 
-            "✏️ 직접입력", 
-            "📊 데이터분석", 
-            "🎯 재고추천",
-            "💾 데이터관리"
+            "📁 파일업로드",
+            "✏️ 상품관리",
+            "📊 데이터분석",
+            "🎯 발주관리", 
+            "💾 시스템관리"
         ]
         
-        current_index = 0
-        if st.session_state.current_page in menu_options:
-            current_index = menu_options.index(st.session_state.current_page)
-        
-        selected_menu = st.radio("기능 선택", menu_options, index=current_index)
-        st.session_state.current_page = selected_menu
+        selected = st.radio("메뉴 선택", menu_options, 
+                           index=menu_options.index(st.session_state.current_menu) 
+                           if st.session_state.current_menu in menu_options else 0)
+        st.session_state.current_menu = selected
         
         st.markdown("---")
         
-        # 현재 상태 표시
-        st.markdown("### 📈 현재 상태")
-        if not st.session_state.inventory_data.empty:
-            total_items = len(st.session_state.inventory_data)
-            total_stock = st.session_state.inventory_data['재고수량'].sum()
-            low_stock_count = len(get_low_stock_recommendations())
+        # 시스템 현황
+        st.markdown("### 📈 현황")
+        inventory = st.session_state.inventory
+        
+        if not inventory.empty:
+            total_items = len(inventory)
+            total_stock = inventory['재고수량'].sum()
+            low_stock_count = len(get_low_stock_items())
             
-            st.metric("총 상품 수", f"{total_items:,}개")
-            st.metric("총 재고량", f"{total_stock:,.0f}개")
+            st.metric("총 상품", f"{total_items:,}개")
+            st.metric("총 재고", f"{total_stock:,.0f}개")
             
             if low_stock_count > 0:
-                st.error(f"⚠️ 발주 필요: {low_stock_count}개")
+                st.error(f"⚠️ 발주필요: {low_stock_count}개")
             else:
-                st.success("✅ 재고 충분")
+                st.success("✅ 재고충분")
         else:
-            st.info("📝 재고 데이터를 등록해주세요")
-    
-    # 메인 컨텐츠
-    if selected_menu == "🏠 대시보드":
-        show_dashboard()
-    elif selected_menu == "📦 재고관리":
-        show_inventory_management()
-    elif selected_menu == "📁 파일업로드":
-        show_file_upload()
-    elif selected_menu == "✏️ 직접입력":
-        show_manual_input()
-    elif selected_menu == "📊 데이터분석":
-        show_data_analysis()
-    elif selected_menu == "🎯 재고추천":
-        show_stock_recommendations()
-    elif selected_menu == "💾 데이터관리":
-        show_data_management()
+            st.info("재고 데이터 없음")
+        
+        # 시스템 정보
+        st.markdown("---")
+        st.markdown("### ℹ️ 시스템")
+        st.caption("🏷️ 중분류: 93개")
+        st.caption("📊 실시간 분석")
+        st.caption("🤖 AI 추천")
+
+def create_download_excel(df, filename):
+    """엑셀 다운로드 생성"""
+    try:
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Data', index=False)
+            
+            # 스타일링
+            worksheet = writer.sheets['Data']
+            header_font = Font(bold=True, color="FFFFFF")
+            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            
+            for cell in worksheet[1]:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+        
+        buffer.seek(0)
+        return buffer.getvalue()
+    except Exception as e:
+        logger.error(f"Excel download creation error: {e}")
+        return None
+
+# ================================
+# 메인 페이지들
+# ================================
 
 def show_dashboard():
-    """대시보드 화면"""
+    """대시보드"""
     st.header("📊 종합 대시보드")
     
-    if st.session_state.inventory_data.empty:
-        st.warning("📝 재고 데이터가 없습니다. 파일을 업로드하거나 직접 입력해주세요.")
-        
-        st.info("👈 시작하려면 사이드바에서 다음 중 선택하세요:")
-        st.markdown("- **📁 파일업로드**: 엑셀 파일로 재고 데이터 업로드")
-        st.markdown("- **✏️ 직접입력**: 수동으로 상품 정보 입력")
-        
+    inventory = st.session_state.inventory
+    
+    if inventory.empty:
+        st.warning("📁 재고 데이터가 없습니다.")
+        st.info("👈 사이드바에서 '📁 파일업로드' 또는 '✏️ 상품관리'를 선택하여 시작하세요.")
         return
     
     # 주요 지표
     col1, col2, col3, col4 = st.columns(4)
     
-    total_items = len(st.session_state.inventory_data)
-    total_stock = st.session_state.inventory_data['재고수량'].sum()
-    total_recommended = st.session_state.inventory_data['추천재고수량'].sum()
-    low_stock_items = len(get_low_stock_recommendations())
+    total_items = len(inventory)
+    total_stock = inventory['재고수량'].sum()
+    total_value = (inventory['재고수량'] * inventory['매가']).sum()
+    low_stock_items = len(get_low_stock_items())
     
     with col1:
         st.metric("총 상품 수", f"{total_items:,}개")
     with col2:
-        st.metric("현재 재고", f"{total_stock:,.0f}개")
+        st.metric("총 재고량", f"{total_stock:,.0f}개")
     with col3:
-        st.metric("추천 재고", f"{total_recommended:,.0f}개")
+        st.metric("재고 가치", f"{total_value:,.0f}원")
     with col4:
-        st.metric("발주 필요", f"{low_stock_items:,}개", delta=f"-{low_stock_items}" if low_stock_items > 0 else "✅")
+        st.metric("발주 필요", f"{low_stock_items:,}개", 
+                 delta=f"-{low_stock_items}" if low_stock_items > 0 else "✅")
     
     # 차트 영역
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("📈 대분류별 재고 구성")
-        category_chart = create_category_analysis_chart()
+        category_chart = create_category_chart()
         if category_chart:
             st.plotly_chart(category_chart, use_container_width=True)
         else:
-            st.info("차트를 생성할 데이터가 부족합니다.")
+            st.info("중분류별 차트 데이터 없음")
     
     with col2:
         st.subheader("⚠️ 발주 필요 상품 (TOP 5)")
-        low_stock = get_low_stock_recommendations()
+        low_stock = get_low_stock_items()
         if not low_stock.empty:
-            display_low_stock = low_stock[['상품명', '대분류명', '재고수량', '추천재고수량', '부족수량']].head(5)
-            st.dataframe(display_low_stock, use_container_width=True)
+            display_cols = ['상품명', '중분류명', '재고수량', '추천재고수량', '부족수량']
+            st.dataframe(low_stock[display_cols].head(5), use_container_width=True)
         else:
-            st.success("✅ 모든 상품의 재고가 충분합니다!")
+            st.success("✅ 모든 상품 재고 충분!")
     
-    # 최근 거래 현황
-    st.subheader("🔄 최근 거래 현황")
-    if not st.session_state.transaction_history.empty:
-        recent_transactions = st.session_state.transaction_history.tail(10)
-        st.dataframe(recent_transactions[['일시', '거래유형', '상품명', '수량', '요일']], use_container_width=True)
-    else:
-        st.info("거래 내역이 없습니다.")
+    # 중분류별 현황
+    st.subheader("📈 중분류별 재고 현황")
+    category_stats = inventory.groupby('중분류').agg({
+        '재고수량': ['count', 'sum', 'mean'],
+        '추천재고수량': 'sum'
+    }).round(1)
+    category_stats.columns = ['상품수', '총재고', '평균재고', '추천총재고']
+    category_stats['중분류명'] = category_stats.index.map(CATEGORIES)
+    category_stats = category_stats[['중분류명', '상품수', '총재고', '평균재고', '추천총재고']]
+    
+    st.dataframe(category_stats, use_container_width=True)
 
 def show_inventory_management():
-    """재고 관리 화면"""
+    """재고 관리"""
     st.header("📦 재고 관리")
     
-    if st.session_state.inventory_data.empty:
-        st.warning("조회할 재고 데이터가 없습니다.")
+    inventory = st.session_state.inventory
+    if inventory.empty:
+        st.warning("조회할 재고가 없습니다.")
         return
     
-    # 필터링 옵션
+    # 검색 및 필터
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        # 대분류 필터
-        categories = ['전체'] + sorted(list(st.session_state.inventory_data['대분류'].unique()))
-        selected_category = st.selectbox("🏷️ 대분류 필터", categories)
+        categories = ['전체'] + sorted([k for k in CATEGORIES.keys() if k in inventory['중분류'].unique()])
+        selected_cat = st.selectbox("🏷️ 중분류", categories)
     
     with col2:
-        search_code = st.text_input("🔍 상품코드 검색")
+        search_code = st.text_input("🔍 상품코드")
     
     with col3:
-        search_name = st.text_input("🔍 상품명 검색")
+        search_name = st.text_input("🔍 상품명")
     
-    # 데이터 필터링
-    filtered_data = st.session_state.inventory_data.copy()
+    # 필터링
+    filtered = inventory.copy()
     
-    if selected_category != '전체':
-        filtered_data = filtered_data[filtered_data['대분류'] == selected_category]
+    if selected_cat != '전체':
+        filtered = filtered[filtered['중분류'] == selected_cat]
     
     if search_code:
-        filtered_data = filtered_data[filtered_data['상품코드'].str.contains(search_code, na=False, case=False)]
+        filtered = filtered[filtered['상품코드'].str.contains(search_code, case=False, na=False)]
     
     if search_name:
-        filtered_data = filtered_data[filtered_data['상품명'].str.contains(search_name, na=False, case=False)]
+        filtered = filtered[filtered['상품명'].str.contains(search_name, case=False, na=False)]
     
-    # 대분류명 추가
-    filtered_data['대분류명'] = filtered_data['대분류'].map(CATEGORIES)
+    filtered['중분류명'] = filtered['중분류'].map(CATEGORIES)
     
     # 결과 표시
-    st.markdown(f"### 📋 검색 결과: **{len(filtered_data):,}**건")
+    st.markdown(f"### 📋 검색 결과: **{len(filtered):,}**건")
     
-    if not filtered_data.empty:
-        # 대분류별 요약 (선택된 카테고리가 있을 때)
-        if selected_category != '전체':
-            st.markdown(f"#### 📊 {CATEGORIES.get(selected_category, selected_category)} 요약")
+    if not filtered.empty:
+        # 선택된 중분류 요약
+        if selected_cat != '전체':
+            st.markdown(f"#### 📊 {CATEGORIES.get(selected_cat, selected_cat)} 요약")
             
             summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
             
-            category_items = len(filtered_data)
-            category_stock = filtered_data['재고수량'].sum()
-            category_recommended = filtered_data['추천재고수량'].sum()
-            category_low_stock = len(filtered_data[filtered_data['재고수량'] < filtered_data['추천재고수량']])
+            cat_items = len(filtered)
+            cat_stock = filtered['재고수량'].sum()
+            cat_recommend = filtered['추천재고수량'].sum()
+            cat_low = len(filtered[filtered['재고수량'] < filtered['추천재고수량']])
             
             with summary_col1:
-                st.metric("상품 수", f"{category_items:,}개")
+                st.metric("상품 수", f"{cat_items:,}개")
             with summary_col2:
-                st.metric("총 재고", f"{category_stock:,.0f}개")
+                st.metric("총 재고", f"{cat_stock:,.0f}개")
             with summary_col3:
-                st.metric("추천 재고", f"{category_recommended:,.0f}개")
+                st.metric("추천 재고", f"{cat_recommend:,.0f}개")
             with summary_col4:
-                st.metric("부족 상품", f"{category_low_stock:,}개")
+                st.metric("부족 상품", f"{cat_low:,}개")
         
-        # 데이터 테이블
-        display_columns = ['상품코드', '상품명', '대분류명', '매가', '재고수량', '추천재고수량', '최종수정일']
-        st.dataframe(filtered_data[display_columns], use_container_width=True, height=400)
+        # 데이터 표시
+        display_cols = ['상품코드', '상품명', '중분류명', '매가', '재고수량', '추천재고수량', '등록일시']
+        st.dataframe(filtered[display_cols], use_container_width=True, height=400)
         
+        # 다운로드
+        excel_data = create_download_excel(filtered, "재고현황.xlsx")
+        if excel_data:
+            st.download_button(
+                "📥 엑셀 다운로드",
+                data=excel_data,
+                file_name=f"재고현황_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     else:
-        st.info("🔍 검색 조건에 맞는 상품이 없습니다.")
+        st.info("검색 조건에 맞는 상품이 없습니다.")
 
 def show_file_upload():
-    """파일 업로드 화면 (대분류 지정 포함)"""
+    """파일 업로드"""
     st.header("📁 파일 업로드")
     
-    st.info("💡 엑셀 파일 업로드 시 대분류를 지정하여 상품을 분류할 수 있습니다.")
+    st.info("💡 엑셀 파일 업로드 시 중분류를 지정하여 상품을 자동 분류합니다.")
     
-    # 대분류 선택
-    st.subheader("🏷️ 업로드할 상품의 대분류 선택")
-    selected_category = st.selectbox(
-        "대분류를 선택하세요",
-        options=list(CATEGORIES.keys()),
-        format_func=lambda x: f"{x} - {CATEGORIES[x]}",
-        key="upload_category"
-    )
+    # 중분류 선택
+    st.subheader("🏷️ 중분류 선택")
     
-    st.markdown(f"**선택된 대분류:** `{selected_category} - {CATEGORIES[selected_category]}`")
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        selected_category = st.selectbox(
+            "중분류를 선택하세요",
+            options=[k for k in CATEGORIES.keys() if k != "00"],
+            format_func=lambda x: f"{x} - {CATEGORIES[x]}"
+        )
+    
+    with col2:
+        st.markdown(f"**선택된 중분류:** `{selected_category} - {CATEGORIES[selected_category]}`")
     
     # 파일 업로드
-    st.subheader("📦 재고 데이터 업로드")
+    st.subheader("📦 재고 파일 업로드")
     
     with st.expander("📋 파일 형식 안내", expanded=True):
         st.markdown("""
         **필수 컬럼:**
-        - `상품코드`: 상품의 고유 코드
+        - `상품코드`: 상품 고유 코드
         - `상품명`: 상품명
         
         **선택 컬럼:**
-        - `매가`: 상품 가격 (기본값: 0)
-        - `재고수량` 또는 `이월수량`: 현재 재고량 (기본값: 0)
-        - `추천재고수량`: 권장 재고량 (기본값: 현재 재고의 1.5배)
+        - `매가`: 판매가격 (기본값: 0)
+        - `재고수량` 또는 `이월수량`: 현재 재고 (기본값: 0)
+        - `추천재고수량`: 권장 재고 (기본값: 현재 재고×1.5)
         
-        **지원 형식:** .xlsx (Excel 2007 이상)
-        
-        **참고:** 업로드되는 모든 상품은 위에서 선택한 대분류로 자동 분류됩니다.
+        **지원 형식:** .xlsx
         """)
     
-    uploaded_file = st.file_uploader(
-        "재고 파일 선택",
-        type=['xlsx'],
-        key="category_inventory_file",
-        help="Excel 파일(.xlsx)을 선택해주세요"
-    )
+    uploaded_file = st.file_uploader("엑셀 파일 선택", type=['xlsx'])
     
     if uploaded_file:
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            replace_data = st.checkbox("기존 데이터 교체", value=False, 
-                                     help="체크하지 않으면 기존 데이터에 추가됩니다")
+        col1, col2 = st.columns(2)
         
-        if st.button("📦 재고 데이터 업로드", type="primary", key="upload_with_category"):
-            with st.spinner("파일을 처리하고 있습니다..."):
-                processed_df = process_excel_file(uploaded_file, selected_category)
+        with col1:
+            replace_mode = st.checkbox("기존 데이터 교체", value=False, 
+                                     help="체크 시 기존 데이터를 완전히 교체합니다")
+        
+        if st.button("📦 업로드 실행", type="primary"):
+            with st.spinner("파일 처리 중..."):
+                processed_data, error = process_inventory_excel(uploaded_file, selected_category)
                 
-                if processed_df is not None and not processed_df.empty:
-                    if replace_data:
-                        st.session_state.inventory_data = processed_df
-                        st.success(f"✅ 재고 데이터 {len(processed_df):,}건이 '{CATEGORIES[selected_category]}' 대분류로 등록되었습니다!")
+                if error:
+                    st.error(f"❌ {error}")
+                elif processed_data is not None and not processed_data.empty:
+                    if replace_mode:
+                        st.session_state.inventory = processed_data
+                        message = f"✅ 재고 데이터 {len(processed_data):,}건이 '{CATEGORIES[selected_category]}' 중분류로 등록되었습니다!"
                     else:
-                        # 기존 데이터와 병합 (중복 상품코드 처리)
-                        existing_codes = st.session_state.inventory_data['상품코드'].tolist()
-                        new_data = processed_df[~processed_df['상품코드'].isin(existing_codes)]
-                        updated_data = processed_df[processed_df['상품코드'].isin(existing_codes)]
+                        # 병합 처리
+                        existing_codes = st.session_state.inventory['상품코드'].tolist()
+                        new_items = processed_data[~processed_data['상품코드'].isin(existing_codes)]
+                        updated_items = processed_data[processed_data['상품코드'].isin(existing_codes)]
                         
-                        if not new_data.empty:
-                            st.session_state.inventory_data = pd.concat([st.session_state.inventory_data, new_data], ignore_index=True)
+                        if not new_items.empty:
+                            st.session_state.inventory = pd.concat([
+                                st.session_state.inventory, new_items
+                            ], ignore_index=True)
                         
-                        if not updated_data.empty:
-                            for _, row in updated_data.iterrows():
-                                idx = st.session_state.inventory_data[st.session_state.inventory_data['상품코드'] == row['상품코드']].index[0]
-                                st.session_state.inventory_data.loc[idx] = row
+                        if not updated_items.empty:
+                            for _, row in updated_items.iterrows():
+                                idx = st.session_state.inventory[
+                                    st.session_state.inventory['상품코드'] == row['상품코드']
+                                ].index[0]
+                                st.session_state.inventory.loc[idx] = row
                         
-                        st.success(f"✅ 신규 {len(new_data):,}건, 업데이트 {len(updated_data):,}건이 '{CATEGORIES[selected_category]}' 대분류로 처리되었습니다!")
+                        message = f"✅ 신규 {len(new_items):,}건, 업데이트 {len(updated_items):,}건 처리완료!"
                     
+                    st.success(message)
                     st.balloons()
                     st.rerun()
+                else:
+                    st.error("처리할 데이터가 없습니다.")
 
-def show_manual_input():
-    """직접 입력 화면"""
-    st.header("✏️ 직접 입력 및 수정")
+def show_product_management():
+    """상품 관리"""
+    st.header("✏️ 상품 관리")
     
-    tab1, tab2, tab3 = st.tabs(["➕ 신규 상품 등록", "📝 재고 조정", "🏷️ 추천재고 설정"])
+    tab1, tab2, tab3 = st.tabs(["➕ 신규등록", "🔄 재고조정", "🎯 추천재고설정"])
     
     with tab1:
         st.subheader("➕ 신규 상품 등록")
         
-        with st.form("new_product_form", clear_on_submit=True):
+        with st.form("new_product", clear_on_submit=True):
             col1, col2 = st.columns(2)
             
             with col1:
-                new_code = st.text_input("상품코드 *", placeholder="예: 8801234567890")
-                new_name = st.text_input("상품명 *", placeholder="예: 삼각김밥 참치마요")
+                new_code = st.text_input("상품코드 *", placeholder="8801234567890")
+                new_name = st.text_input("상품명 *", placeholder="삼각김밥 참치마요")
                 new_category = st.selectbox(
-                    "대분류 *", 
-                    options=list(CATEGORIES.keys()),
+                    "중분류 *",
+                    options=[k for k in CATEGORIES.keys() if k != "00"],
                     format_func=lambda x: f"{x} - {CATEGORIES[x]}"
                 )
             
             with col2:
                 new_price = st.number_input("매가 *", min_value=0, value=0, step=100)
                 new_stock = st.number_input("현재재고 *", min_value=0, value=0, step=1)
-                new_recommended = st.number_input("추천재고 *", min_value=0, value=0, step=1)
-                
-            submitted = st.form_submit_button("🆕 상품 등록", type="primary", use_container_width=True)
+                new_recommend = st.number_input("추천재고 *", min_value=0, value=0, step=1)
             
-            if submitted:
+            if st.form_submit_button("🆕 등록", type="primary"):
                 if not new_code or not new_name:
-                    st.error("❌ 상품코드와 상품명을 입력해주세요!")
-                elif new_code in st.session_state.inventory_data['상품코드'].values:
-                    st.error("❌ 이미 존재하는 상품코드입니다!")
+                    st.error("상품코드와 상품명은 필수입니다.")
+                elif new_code in st.session_state.inventory['상품코드'].values:
+                    st.error("이미 존재하는 상품코드입니다.")
                 else:
                     new_product = pd.DataFrame({
                         '상품코드': [new_code],
                         '상품명': [new_name.strip()],
-                        '대분류': [new_category],
+                        '중분류': [new_category],
                         '매가': [new_price],
                         '재고수량': [new_stock],
-                        '추천재고수량': [new_recommended if new_recommended > 0 else max(new_stock * 1.5, 10)],
-                        '최종수정일': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
+                        '추천재고수량': [new_recommend if new_recommend > 0 else max(new_stock * 1.5, 5)],
+                        '등록일시': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
                     })
                     
-                    st.session_state.inventory_data = pd.concat([st.session_state.inventory_data, new_product], ignore_index=True)
-                    add_transaction_record("신규등록", new_code, new_name, new_stock, 0, new_stock)
+                    st.session_state.inventory = pd.concat([
+                        st.session_state.inventory, new_product
+                    ], ignore_index=True)
                     
-                    st.success(f"✅ '{new_name}'이(가) {CATEGORIES[new_category]} 대분류로 등록되었습니다!")
-                    st.balloons()
+                    add_transaction("신규등록", new_code, new_name, new_stock, 0, new_stock)
+                    
+                    st.success(f"✅ '{new_name}'이 {CATEGORIES[new_category]} 중분류로 등록되었습니다!")
                     st.rerun()
     
     with tab2:
-        st.subheader("📝 재고 조정")
+        st.subheader("🔄 재고 조정")
         
-        if st.session_state.inventory_data.empty:
-            st.warning("⚠️ 조정할 재고 데이터가 없습니다.")
+        if st.session_state.inventory.empty:
+            st.warning("조정할 상품이 없습니다.")
             return
         
-        # 상품 검색
-        search_term = st.text_input("🔍 상품 검색 (코드 또는 상품명)")
+        search = st.text_input("🔍 상품 검색", placeholder="상품코드 또는 상품명")
         
-        if search_term:
-            filtered_products = st.session_state.inventory_data[
-                (st.session_state.inventory_data['상품코드'].str.contains(search_term, na=False, case=False)) |
-                (st.session_state.inventory_data['상품명'].str.contains(search_term, na=False, case=False))
+        if search:
+            filtered = st.session_state.inventory[
+                (st.session_state.inventory['상품코드'].str.contains(search, case=False, na=False)) |
+                (st.session_state.inventory['상품명'].str.contains(search, case=False, na=False))
             ]
             
-            if not filtered_products.empty:
-                product_options = []
-                for _, row in filtered_products.iterrows():
-                    option = f"{row['상품코드']} - {row['상품명']} (재고: {row['재고수량']:.0f}, 추천: {row['추천재고수량']:.0f})"
-                    product_options.append(option)
+            if not filtered.empty:
+                options = []
+                for _, row in filtered.iterrows():
+                    option = f"{row['상품코드']} - {row['상품명']} (재고: {row['재고수량']:.0f})"
+                    options.append(option)
                 
-                selected_product = st.selectbox("조정할 상품 선택", ["선택해주세요"] + product_options)
+                selected = st.selectbox("조정할 상품", ["선택하세요"] + options)
                 
-                if selected_product != "선택해주세요":
-                    selected_code = selected_product.split(" - ")[0]
-                    product_info = st.session_state.inventory_data[
-                        st.session_state.inventory_data['상품코드'] == selected_code
+                if selected != "선택하세요":
+                    code = selected.split(" - ")[0]
+                    product = st.session_state.inventory[
+                        st.session_state.inventory['상품코드'] == code
                     ].iloc[0]
                     
-                    current_stock = float(product_info['재고수량'])
-                    recommended_stock = float(product_info['추천재고수량'])
+                    current_stock = float(product['재고수량'])
                     
-                    # 조정 UI
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        adjustment_type = st.selectbox("조정 유형", ["입고", "판매", "폐기", "직접조정"])
+                        adj_type = st.selectbox("조정 유형", ["입고", "판매", "폐기", "직접조정"])
                     
                     with col2:
-                        if adjustment_type == "직접조정":
-                            new_stock = st.number_input("새로운 재고량", min_value=0, value=int(current_stock))
-                            adjustment_qty = new_stock - current_stock
+                        if adj_type == "직접조정":
+                            new_stock = st.number_input("새 재고량", min_value=0, value=int(current_stock))
+                            change = new_stock - current_stock
                         else:
-                            adjustment_qty = st.number_input("조정 수량", min_value=1, value=1, step=1)
-                            if adjustment_type in ["판매", "폐기"]:
-                                adjustment_qty = -adjustment_qty
+                            qty = st.number_input("수량", min_value=1, value=1)
+                            change = qty if adj_type == "입고" else -qty
                     
                     with col3:
-                        expected_stock = max(0, current_stock + adjustment_qty) if adjustment_type != "직접조정" else new_stock
-                        
-                        # 상태 표시
-                        if expected_stock < recommended_stock:
-                            delta_color = "red"
-                            status = f"부족 ({recommended_stock - expected_stock:.0f})"
-                        else:
-                            delta_color = "green"
-                            status = "충분"
-                        
-                        st.metric("조정 후 재고", f"{expected_stock:,.0f}개", delta=f"{adjustment_qty:+.0f}")
-                        st.markdown(f"**재고 상태:** :{delta_color}[{status}]")
+                        expected = max(0, current_stock + change) if adj_type != "직접조정" else new_stock
+                        st.metric("조정 후", f"{expected:.0f}개", delta=f"{change:+.0f}")
                     
-                    if st.button("📝 재고 조정 실행", type="primary"):
-                        try:
-                            if adjustment_type == "직접조정":
-                                idx = st.session_state.inventory_data[st.session_state.inventory_data['상품코드'] == selected_code].index[0]
-                                st.session_state.inventory_data.loc[idx, '재고수량'] = new_stock
-                                st.session_state.inventory_data.loc[idx, '최종수정일'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                add_transaction_record("직접조정", selected_code, product_info['상품명'], adjustment_qty, current_stock, new_stock)
-                            else:
-                                update_inventory(selected_code, adjustment_qty, adjustment_type)
-                            
-                            st.success(f"✅ 재고 조정 완료! ({current_stock:.0f} → {expected_stock:.0f})")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ 조정 중 오류: {e}")
+                    if st.button("🔄 조정 실행", type="primary"):
+                        if adj_type == "직접조정":
+                            idx = st.session_state.inventory[
+                                st.session_state.inventory['상품코드'] == code
+                            ].index[0]
+                            st.session_state.inventory.loc[idx, '재고수량'] = new_stock
+                            st.session_state.inventory.loc[idx, '등록일시'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            add_transaction("직접조정", code, product['상품명'], change, current_stock, new_stock)
+                        else:
+                            update_stock(code, change, adj_type)
+                        
+                        st.success(f"✅ 재고 조정 완료! ({current_stock:.0f} → {expected:.0f})")
+                        st.rerun()
             else:
-                st.info("🔍 검색 결과가 없습니다.")
+                st.info("검색 결과가 없습니다.")
     
     with tab3:
-        st.subheader("🏷️ 추천재고수량 설정")
+        st.subheader("🎯 추천재고수량 설정")
         
-        if st.session_state.inventory_data.empty:
-            st.warning("⚠️ 설정할 상품이 없습니다.")
+        if st.session_state.inventory.empty:
+            st.warning("설정할 상품이 없습니다.")
             return
         
-        # 대분류별 일괄 설정
-        st.markdown("#### 📊 대분류별 일괄 설정")
+        # 중분류별 일괄 설정
+        st.markdown("#### 📊 중분류별 일괄 설정")
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            batch_category = st.selectbox(
-                "대분류 선택",
-                options=list(CATEGORIES.keys()),
+            batch_cat = st.selectbox(
+                "중분류",
+                options=[k for k in CATEGORIES.keys() if k != "00"],
                 format_func=lambda x: f"{x} - {CATEGORIES[x]}"
             )
         
         with col2:
-            multiplier = st.number_input("배수 설정", min_value=1.0, max_value=5.0, value=1.5, step=0.1,
-                                       help="현재 재고 × 배수 = 추천 재고")
+            multiplier = st.number_input("배수", min_value=1.0, max_value=5.0, value=1.5, step=0.1)
         
         with col3:
-            if st.button("🔄 일괄 적용", type="secondary"):
-                category_items = st.session_state.inventory_data[st.session_state.inventory_data['대분류'] == batch_category]
-                if not category_items.empty:
-                    for idx in category_items.index:
-                        current_stock = st.session_state.inventory_data.loc[idx, '재고수량']
-                        new_recommended = max(int(current_stock * multiplier), 5)  # 최소 5개
-                        st.session_state.inventory_data.loc[idx, '추천재고수량'] = new_recommended
+            if st.button("🔄 일괄 적용"):
+                cat_items = st.session_state.inventory[
+                    st.session_state.inventory['중분류'] == batch_cat
+                ]
+                if not cat_items.empty:
+                    for idx in cat_items.index:
+                        current = st.session_state.inventory.loc[idx, '재고수량']
+                        new_recommend = max(int(current * multiplier), 5)
+                        st.session_state.inventory.loc[idx, '추천재고수량'] = new_recommend
                     
-                    st.success(f"✅ {CATEGORIES[batch_category]} 대분류 {len(category_items)}개 상품의 추천재고가 업데이트되었습니다!")
+                    st.success(f"✅ {CATEGORIES[batch_cat]} 중분류 {len(cat_items)}개 상품 업데이트!")
                     st.rerun()
                 else:
-                    st.warning(f"⚠️ {CATEGORIES[batch_category]} 대분류에 상품이 없습니다.")
-        
-        st.markdown("---")
-        
-        # 개별 상품 설정
-        st.markdown("#### 🎯 개별 상품 설정")
-        
-        search_for_recommend = st.text_input("🔍 상품 검색 (추천재고 설정용)", key="recommend_search")
-        
-        if search_for_recommend:
-            filtered_for_recommend = st.session_state.inventory_data[
-                (st.session_state.inventory_data['상품코드'].str.contains(search_for_recommend, na=False, case=False)) |
-                (st.session_state.inventory_data['상품명'].str.contains(search_for_recommend, na=False, case=False))
-            ]
-            
-            if not filtered_for_recommend.empty:
-                # 편집 가능한 데이터프레임
-                st.markdown("**추천재고수량을 직접 수정하세요:**")
-                
-                edited_df = st.data_editor(
-                    filtered_for_recommend[['상품코드', '상품명', '재고수량', '추천재고수량']],
-                    column_config={
-                        "상품코드": st.column_config.TextColumn("상품코드", disabled=True),
-                        "상품명": st.column_config.TextColumn("상품명", disabled=True),
-                        "재고수량": st.column_config.NumberColumn("현재재고", disabled=True),
-                        "추천재고수량": st.column_config.NumberColumn("추천재고", min_value=0, step=1)
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
-                
-                if st.button("💾 변경사항 저장", type="primary"):
-                    try:
-                        for _, row in edited_df.iterrows():
-                            idx = st.session_state.inventory_data[st.session_state.inventory_data['상품코드'] == row['상품코드']].index[0]
-                            st.session_state.inventory_data.loc[idx, '추천재고수량'] = row['추천재고수량']
-                        
-                        st.success("✅ 추천재고수량이 업데이트되었습니다!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ 저장 중 오류: {e}")
+                    st.warning("해당 중분류에 상품이 없습니다.")
 
 def show_data_analysis():
-    """데이터 분석 화면"""
-    st.header("📊 데이터 분석 및 통계")
+    """데이터 분석"""
+    st.header("📊 데이터 분석")
     
-    if st.session_state.transaction_history.empty:
-        st.warning("📝 분석할 거래 데이터가 없습니다. 거래가 발생하면 자동으로 데이터가 수집됩니다.")
+    transactions = st.session_state.transactions
+    
+    if transactions.empty:
+        st.warning("분석할 거래 데이터가 없습니다.")
         return
     
     # 기간 선택
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("📅 분석 시작일", datetime.now().date() - pd.Timedelta(days=30))
+        start_date = st.date_input("시작일", datetime.now().date() - timedelta(days=30))
     with col2:
-        end_date = st.date_input("📅 분석 종료일", datetime.now().date())
+        end_date = st.date_input("종료일", datetime.now().date())
     
     # 데이터 필터링
-    filtered_history = st.session_state.transaction_history.copy()
-    filtered_history['날짜'] = pd.to_datetime(filtered_history['일시']).dt.date
-    filtered_history = filtered_history[
-        (filtered_history['날짜'] >= start_date) & 
-        (filtered_history['날짜'] <= end_date)
+    filtered_trans = transactions.copy()
+    filtered_trans['날짜'] = pd.to_datetime(filtered_trans['일시']).dt.date
+    filtered_trans = filtered_trans[
+        (filtered_trans['날짜'] >= start_date) & (filtered_trans['날짜'] <= end_date)
     ]
     
-    if filtered_history.empty:
-        st.info("📊 선택한 기간에 거래 데이터가 없습니다.")
+    if filtered_trans.empty:
+        st.info("선택한 기간에 데이터가 없습니다.")
         return
     
     # 요약 통계
-    st.subheader("📈 기간별 요약 통계")
+    st.subheader("📈 기간 요약")
     
-    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+    col1, col2, col3, col4 = st.columns(4)
     
-    total_transactions = len(filtered_history)
-    total_sales = filtered_history[filtered_history['거래유형'] == '판매']['수량'].sum()
-    total_disposal = filtered_history[filtered_history['거래유형'] == '폐기']['수량'].sum()
-    total_inbound = filtered_history[filtered_history['거래유형'] == '입고']['수량'].sum()
+    total_trans = len(filtered_trans)
+    total_sales = filtered_trans[filtered_trans['거래유형'] == '판매']['수량'].sum()
+    total_disposal = filtered_trans[filtered_trans['거래유형'] == '폐기']['수량'].sum()
+    disposal_rate = (total_disposal / (total_sales + total_disposal) * 100) if (total_sales + total_disposal) > 0 else 0
     
-    with summary_col1:
-        st.metric("총 거래 건수", f"{total_transactions:,}건")
-    with summary_col2:
-        st.metric("총 판매량", f"{total_sales:,.0f}개")
-    with summary_col3:
-        st.metric("총 폐기량", f"{total_disposal:,.0f}개")
-    with summary_col4:
-        disposal_rate = (total_disposal / (total_sales + total_disposal) * 100) if (total_sales + total_disposal) > 0 else 0
+    with col1:
+        st.metric("총 거래", f"{total_trans:,}건")
+    with col2:
+        st.metric("총 판매", f"{total_sales:,.0f}개")
+    with col3:
+        st.metric("총 폐기", f"{total_disposal:,.0f}개")
+    with col4:
         st.metric("폐기율", f"{disposal_rate:.1f}%")
     
-    # 차트 생성
-    weekday_chart, monthly_chart = create_sales_analysis_chart()
+    # 차트
+    col1, col2 = st.columns(2)
     
-    if weekday_chart and monthly_chart:
-        st.subheader("📊 판매/폐기 패턴 분석")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
+    with col1:
+        weekday_chart = create_weekday_chart()
+        if weekday_chart:
             st.plotly_chart(weekday_chart, use_container_width=True)
-        
-        with col2:
+    
+    with col2:
+        monthly_chart = create_monthly_chart()
+        if monthly_chart:
             st.plotly_chart(monthly_chart, use_container_width=True)
     
-    # 대분류별 분석
-    st.subheader("🏷️ 대분류별 거래 분석")
+    # 중분류별 성과
+    category_chart = create_category_performance_chart()
+    if category_chart:
+        st.plotly_chart(category_chart, use_container_width=True)
     
-    # 거래 내역에 대분류 정보 추가
-    inventory_dict = st.session_state.inventory_data.set_index('상품코드')['대분류'].to_dict()
-    filtered_history['대분류'] = filtered_history['상품코드'].map(inventory_dict)
-    filtered_history['대분류명'] = filtered_history['대분류'].map(CATEGORIES)
-    
-    # 대분류별 판매/폐기 현황
-    category_analysis = filtered_history[filtered_history['거래유형'].isin(['판매', '폐기'])].groupby(['대분류명', '거래유형'])['수량'].sum().reset_index()
-    
-    if not category_analysis.empty:
-        fig_category = px.bar(
-            category_analysis,
-            x='대분류명',
-            y='수량',
-            color='거래유형',
-            title='대분류별 판매/폐기 현황',
-            color_discrete_map={'판매': '#2E86AB', '폐기': '#F24236'}
-        )
-        fig_category.update_layout(height=500, xaxis_tickangle=-45)
-        st.plotly_chart(fig_category, use_container_width=True)
-    
-    # 상세 데이터 테이블
+    # 상세 데이터
     st.subheader("📋 상세 거래 내역")
     
-    # 거래 유형별 필터
-    transaction_filter = st.multiselect(
-        "거래 유형 선택",
-        options=filtered_history['거래유형'].unique(),
-        default=filtered_history['거래유형'].unique()
+    trans_types = st.multiselect(
+        "거래 유형 필터",
+        options=filtered_trans['거래유형'].unique(),
+        default=filtered_trans['거래유형'].unique()
     )
     
-    filtered_display = filtered_history[filtered_history['거래유형'].isin(transaction_filter)]
+    display_trans = filtered_trans[filtered_trans['거래유형'].isin(trans_types)]
     
-    if not filtered_display.empty:
+    if not display_trans.empty:
+        # 중분류명 추가
+        inventory = st.session_state.inventory
+        if not inventory.empty:
+            category_map = inventory.set_index('상품코드')['중분류'].to_dict()
+            display_trans['중분류'] = display_trans['상품코드'].map(category_map)
+            display_trans['중분류명'] = display_trans['중분류'].map(CATEGORIES)
+            
+            display_cols = ['일시', '거래유형', '상품명', '중분류명', '수량', '요일']
+        else:
+            display_cols = ['일시', '거래유형', '상품명', '수량', '요일']
+        
         st.dataframe(
-            filtered_display[['일시', '거래유형', '상품명', '대분류명', '수량', '요일']].sort_values('일시', ascending=False),
+            display_trans[display_cols].sort_values('일시', ascending=False),
             use_container_width=True,
             height=400
         )
-        
-        # 다운로드 버튼
-        if st.button("📥 분석 데이터 다운로드"):
-            excel_data = filtered_display.to_excel(index=False)
-            st.download_button(
-                label="📊 엑셀로 다운로드",
-                data=excel_data,
-                file_name=f"거래분석_{start_date}_{end_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-    else:
-        st.info("선택한 조건에 맞는 거래가 없습니다.")
 
-def show_stock_recommendations():
-    """재고 추천 화면"""
-    st.header("🎯 재고 추천 및 발주 관리")
+def show_order_management():
+    """발주 관리"""
+    st.header("🎯 발주 관리")
     
-    if st.session_state.inventory_data.empty:
-        st.warning("📝 추천할 재고 데이터가 없습니다.")
+    low_stock = get_low_stock_items()
+    
+    if low_stock.empty:
+        st.success("🎉 모든 상품의 재고가 충분합니다!")
+        
+        inventory = st.session_state.inventory
+        if not inventory.empty:
+            total_items = len(inventory)
+            sufficient_items = len(inventory[inventory['재고수량'] >= inventory['추천재고수량']])
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("전체 상품", f"{total_items:,}개")
+            with col2:
+                st.metric("재고 충분", f"{sufficient_items:,}개")
+            with col3:
+                rate = (sufficient_items / total_items * 100) if total_items > 0 else 0
+                st.metric("충족률", f"{rate:.1f}%")
         return
     
-    # 발주 필요 상품 목록
-    low_stock_items = get_low_stock_recommendations()
+    # 발주 현황
+    st.subheader(f"⚠️ 발주 필요 상품: {len(low_stock):,}개")
     
-    if low_stock_items.empty:
-        st.success("🎉 모든 상품의 재고가 추천 수준을 충족합니다!")
-        
-        # 전체 재고 현황 요약
-        st.subheader("📊 전체 재고 현황")
-        
-        total_items = len(st.session_state.inventory_data)
-        sufficient_stock = len(st.session_state.inventory_data[
-            st.session_state.inventory_data['재고수량'] >= st.session_state.inventory_data['추천재고수량']
-        ])
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("전체 상품", f"{total_items:,}개")
-        with col2:
-            st.metric("재고 충분", f"{sufficient_stock:,}개")
-        with col3:
-            sufficiency_rate = (sufficient_stock / total_items * 100) if total_items > 0 else 0
-            st.metric("충족률", f"{sufficiency_rate:.1f}%")
-        
-        return
-    
-    # 발주 우선순위 표시
-    st.subheader(f"⚠️ 발주 필요 상품: {len(low_stock_items):,}개")
-    
-    # 요약 정보
     col1, col2, col3, col4 = st.columns(4)
     
-    total_shortage = low_stock_items['부족수량'].sum()
-    avg_shortage = low_stock_items['부족수량'].mean()
-    max_shortage = low_stock_items['부족수량'].max()
-    critical_items = len(low_stock_items[low_stock_items['재고수량'] == 0])
+    total_shortage = low_stock['부족수량'].sum()
+    avg_shortage = low_stock['부족수량'].mean()
+    critical_items = len(low_stock[low_stock['재고수량'] == 0])
+    max_shortage = low_stock['부족수량'].max()
     
     with col1:
-        st.metric("총 부족 수량", f"{total_shortage:,.0f}개")
+        st.metric("총 부족량", f"{total_shortage:,.0f}개")
     with col2:
         st.metric("평균 부족", f"{avg_shortage:.1f}개")
     with col3:
-        st.metric("최대 부족", f"{max_shortage:,.0f}개")
+        st.metric("재고0 상품", f"{critical_items:,}개")
     with col4:
-        st.metric("재고 0인 상품", f"{critical_items:,}개", delta=f"-{critical_items}" if critical_items > 0 else "✅")
+        st.metric("최대 부족", f"{max_shortage:,.0f}개")
     
-    # 대분류별 발주 현황
-    st.subheader("🏷️ 대분류별 발주 현황")
+    # 중분류별 발주 현황
+    st.subheader("🏷️ 중분류별 발주 현황")
     
-    category_shortage = low_stock_items.groupby('대분류명').agg({
+    category_shortage = low_stock.groupby('중분류명').agg({
         '부족수량': ['count', 'sum']
-    }).round(2)
-    category_shortage.columns = ['부족상품수', '총부족수량']
+    })
+    category_shortage.columns = ['부족상품수', '총부족량']
     category_shortage = category_shortage.reset_index()
     
-    fig_shortage = px.bar(
-        category_shortage,
-        x='대분류명',
-        y='총부족수량',
-        title='대분류별 부족 수량',
-        color='총부족수량',
-        color_continuous_scale='Reds'
-    )
-    fig_shortage.update_layout(height=400, xaxis_tickangle=-45)
-    st.plotly_chart(fig_shortage, use_container_width=True)
+    fig = px.bar(category_shortage, x='중분류명', y='총부족량',
+                title='중분류별 부족 수량', color='총부족량',
+                color_continuous_scale='Reds')
+    fig.update_layout(height=400, xaxis_tickangle=-45)
+    st.plotly_chart(fig, use_container_width=True)
     
-    # 발주 우선순위 테이블
-    st.subheader("📋 발주 우선순위 (부족수량 기준)")
+    # 우선순위별 상품 목록
+    st.subheader("📋 발주 우선순위")
     
-    # 우선순위 필터
     priority_filter = st.selectbox(
         "우선순위 필터",
-        ["전체", "긴급 (재고 0)", "높음 (부족 20개 이상)", "보통 (부족 10개 이상)", "낮음 (부족 10개 미만)"]
+        ["전체", "긴급 (재고0)", "높음 (부족20+)", "보통 (부족10-19)", "낮음 (부족10미만)"]
     )
     
-    if priority_filter == "긴급 (재고 0)":
-        filtered_recommendations = low_stock_items[low_stock_items['재고수량'] == 0]
-    elif priority_filter == "높음 (부족 20개 이상)":
-        filtered_recommendations = low_stock_items[low_stock_items['부족수량'] >= 20]
-    elif priority_filter == "보통 (부족 10개 이상)":
-        filtered_recommendations = low_stock_items[(low_stock_items['부족수량'] >= 10) & (low_stock_items['부족수량'] < 20)]
-    elif priority_filter == "낮음 (부족 10개 미만)":
-        filtered_recommendations = low_stock_items[low_stock_items['부족수량'] < 10]
+    if priority_filter == "긴급 (재고0)":
+        filtered_items = low_stock[low_stock['재고수량'] == 0]
+    elif priority_filter == "높음 (부족20+)":
+        filtered_items = low_stock[low_stock['부족수량'] >= 20]
+    elif priority_filter == "보통 (부족10-19)":
+        filtered_items = low_stock[(low_stock['부족수량'] >= 10) & (low_stock['부족수량'] < 20)]
+    elif priority_filter == "낮음 (부족10미만)":
+        filtered_items = low_stock[low_stock['부족수량'] < 10]
     else:
-        filtered_recommendations = low_stock_items
+        filtered_items = low_stock
     
-    if not filtered_recommendations.empty:
-        # 우선순위 표시를 위한 컬럼 추가
+    if not filtered_items.empty:
+        # 우선순위 표시
         def get_priority(row):
             if row['재고수량'] == 0:
                 return "🔴 긴급"
@@ -983,14 +989,10 @@ def show_stock_recommendations():
             else:
                 return "🟢 낮음"
         
-        filtered_recommendations['우선순위'] = filtered_recommendations.apply(get_priority, axis=1)
+        filtered_items['우선순위'] = filtered_items.apply(get_priority, axis=1)
         
-        display_columns = ['우선순위', '상품코드', '상품명', '대분류명', '재고수량', '추천재고수량', '부족수량']
-        st.dataframe(
-            filtered_recommendations[display_columns],
-            use_container_width=True,
-            height=400
-        )
+        display_cols = ['우선순위', '상품코드', '상품명', '중분류명', '재고수량', '추천재고수량', '부족수량']
+        st.dataframe(filtered_items[display_cols], use_container_width=True, height=400)
         
         # 발주서 생성
         st.subheader("📋 발주서 생성")
@@ -999,172 +1001,193 @@ def show_stock_recommendations():
         
         with col1:
             if st.button("📄 발주서 다운로드", type="primary"):
-                # 발주서 형식으로 데이터 정리
-                order_sheet = filtered_recommendations[['상품코드', '상품명', '대분류명', '현재재고', '추천재고', '발주수량']].copy()
-                order_sheet.columns = ['상품코드', '상품명', '대분류', '현재재고', '추천재고', '발주수량']
-                order_sheet['발주일자'] = datetime.now().strftime('%Y-%m-%d')
-                order_sheet['비고'] = ''
+                order_data = filtered_items[['상품코드', '상품명', '중분류명', '재고수량', '추천재고수량', '부족수량']].copy()
+                order_data.columns = ['상품코드', '상품명', '중분류', '현재재고', '추천재고', '발주수량']
+                order_data['발주일자'] = datetime.now().strftime('%Y-%m-%d')
+                order_data['비고'] = ''
                 
-                excel_data = order_sheet.to_excel(index=False)
-                st.download_button(
-                    label="📥 발주서 엑셀 다운로드",
-                    data=excel_data,
-                    file_name=f"발주서_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                excel_data = create_download_excel(order_data, "발주서.xlsx")
+                if excel_data:
+                    st.download_button(
+                        "📥 발주서 엑셀 다운로드",
+                        data=excel_data,
+                        file_name=f"발주서_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
         
         with col2:
-            # 일괄 발주 처리 (가상)
-            if st.button("🚚 일괄 발주 요청", type="secondary"):
-                st.info(f"📋 {len(filtered_recommendations)}개 상품의 발주가 요청되었습니다. (실제 발주 시스템 연동 필요)")
-    
+            if st.button("🚚 일괄 발주 요청"):
+                st.info(f"📋 {len(filtered_items)}개 상품 발주 요청 완료! (실제 발주 시스템 연동 필요)")
     else:
-        st.info(f"📊 '{priority_filter}' 조건에 해당하는 상품이 없습니다.")
+        st.info("선택한 우선순위에 해당하는 상품이 없습니다.")
 
-def show_data_management():
-    """데이터 관리 화면"""
-    st.header("💾 데이터 관리")
+def show_system_management():
+    """시스템 관리"""
+    st.header("💾 시스템 관리")
     
-    tab1, tab2, tab3 = st.tabs(["📥 데이터 백업", "🔄 데이터 초기화", "📤 템플릿 다운로드"])
+    tab1, tab2, tab3 = st.tabs(["📥 백업", "🔄 초기화", "📤 템플릿"])
     
     with tab1:
         st.subheader("📥 데이터 백업")
-        st.info("💡 정기적인 백업으로 데이터 손실을 방지하세요.")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("#### 📦 재고 데이터 백업")
-            if not st.session_state.inventory_data.empty:
-                items_count = len(st.session_state.inventory_data)
-                st.write(f"백업 대상: **{items_count:,}**개 상품")
+            st.markdown("#### 📦 재고 데이터")
+            if not st.session_state.inventory.empty:
+                count = len(st.session_state.inventory)
+                st.write(f"백업 대상: **{count:,}**개 상품")
                 
-                # 백업 파일 생성
-                backup_data = st.session_state.inventory_data.copy()
-                backup_data['대분류명'] = backup_data['대분류'].map(CATEGORIES)
+                backup_data = st.session_state.inventory.copy()
+                backup_data['중분류명'] = backup_data['중분류'].map(CATEGORIES)
                 
-                excel_data = backup_data.to_excel(index=False)
-                st.download_button(
-                    label="📦 재고 데이터 백업",
-                    data=excel_data,
-                    file_name=f"재고데이터_백업_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary"
-                )
+                excel_data = create_download_excel(backup_data, "재고백업.xlsx")
+                if excel_data:
+                    st.download_button(
+                        "📦 재고 백업",
+                        data=excel_data,
+                        file_name=f"재고백업_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary"
+                    )
             else:
                 st.warning("백업할 재고 데이터가 없습니다.")
         
         with col2:
-            st.markdown("#### 📊 거래내역 백업")
-            if not st.session_state.transaction_history.empty:
-                history_count = len(st.session_state.transaction_history)
-                st.write(f"백업 대상: **{history_count:,}**건 거래내역")
+            st.markdown("#### 📊 거래 내역")
+            if not st.session_state.transactions.empty:
+                count = len(st.session_state.transactions)
+                st.write(f"백업 대상: **{count:,}**건 거래")
                 
-                excel_data = st.session_state.transaction_history.to_excel(index=False)
-                st.download_button(
-                    label="📊 거래내역 백업",
-                    data=excel_data,
-                    file_name=f"거래내역_백업_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary"
-                )
+                excel_data = create_download_excel(st.session_state.transactions, "거래백업.xlsx")
+                if excel_data:
+                    st.download_button(
+                        "📊 거래 백업",
+                        data=excel_data,
+                        file_name=f"거래백업_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary"
+                    )
             else:
-                st.warning("백업할 거래내역이 없습니다.")
+                st.warning("백업할 거래 데이터가 없습니다.")
     
     with tab2:
         st.subheader("🔄 데이터 초기화")
-        st.error("⚠️ **주의**: 이 작업은 되돌릴 수 없습니다. 반드시 백업을 먼저 진행하세요!")
+        st.error("⚠️ 주의: 삭제된 데이터는 복구할 수 없습니다!")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("📦 재고 데이터만 초기화", type="secondary"):
-                if st.session_state.get('confirm_inventory_reset', False):
-                    st.session_state.inventory_data = pd.DataFrame(columns=[
-                        '상품코드', '상품명', '대분류', '매가', '재고수량', '추천재고수량', '최종수정일'
+            if st.button("📦 재고 데이터 초기화"):
+                if st.session_state.confirm_inv_reset:
+                    st.session_state.inventory = pd.DataFrame(columns=[
+                        '상품코드', '상품명', '중분류', '매가', '재고수량', '추천재고수량', '등록일시'
                     ])
-                    st.session_state.confirm_inventory_reset = False
+                    st.session_state.confirm_inv_reset = False
                     st.success("✅ 재고 데이터가 초기화되었습니다.")
                     st.rerun()
                 else:
-                    st.session_state.confirm_inventory_reset = True
-                    st.warning("한 번 더 클릭하면 재고 데이터가 삭제됩니다.")
+                    st.session_state.confirm_inv_reset = True
+                    st.warning("한 번 더 클릭하면 삭제됩니다.")
         
         with col2:
-            if st.button("📊 거래내역만 초기화", type="secondary"):
-                if st.session_state.get('confirm_history_reset', False):
-                    st.session_state.transaction_history = pd.DataFrame(columns=[
-                        '일시', '거래유형', '상품코드', '상품명', '수량', '변경전재고', '변경후재고', '요일', '월'
+            if st.button("📊 거래 내역 초기화"):
+                if st.session_state.confirm_trans_reset:
+                    st.session_state.transactions = pd.DataFrame(columns=[
+                        '일시', '거래유형', '상품코드', '상품명', '수량', '변경전', '변경후', '요일', '월'
                     ])
-                    st.session_state.confirm_history_reset = False
-                    st.success("✅ 거래내역이 초기화되었습니다.")
+                    st.session_state.confirm_trans_reset = False
+                    st.success("✅ 거래 내역이 초기화되었습니다.")
                     st.rerun()
                 else:
-                    st.session_state.confirm_history_reset = True
-                    st.warning("한 번 더 클릭하면 거래내역이 삭제됩니다.")
+                    st.session_state.confirm_trans_reset = True
+                    st.warning("한 번 더 클릭하면 삭제됩니다.")
     
     with tab3:
-        st.subheader("📤 업로드 템플릿 다운로드")
-        st.info("💡 올바른 형식의 엑셀 파일을 업로드하기 위한 템플릿을 제공합니다.")
+        st.subheader("📤 업로드 템플릿")
         
         # 재고 템플릿
-        inventory_template = pd.DataFrame({
-            '상품코드': ['8801234567890', '8801234567891', ''],
-            '상품명': ['삼각김밥 참치마요', '삼각김밥 불고기', ''],
-            '매가': [1200, 1300, ''],
-            '재고수량': [10, 15, ''],
-            '추천재고수량': [20, 25, ''],
-            '비고': ['', '', '']
+        template_data = pd.DataFrame({
+            '상품코드': ['8801234567890', '8801234567891'],
+            '상품명': ['삼각김밥 참치마요', '삼각김밥 불고기'],
+            '매가': [1200, 1300],
+            '재고수량': [10, 15],
+            '추천재고수량': [20, 25]
         })
         
-        st.dataframe(inventory_template.head(2), use_container_width=True)
+        st.dataframe(template_data, use_container_width=True)
         
-        excel_data = inventory_template.to_excel(index=False)
-        st.download_button(
-            label="📦 재고 업로드 템플릿 다운로드",
-            data=excel_data,
-            file_name="재고_업로드_템플릿.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
+        excel_template = create_download_excel(template_data, "재고템플릿.xlsx")
+        if excel_template:
+            st.download_button(
+                "📦 재고 업로드 템플릿 다운로드",
+                data=excel_template,
+                file_name="재고_업로드_템플릿.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
         
-        # 카테고리 안내
+        # 중분류 안내
         st.markdown("---")
-        st.markdown("#### 📂 대분류 카테고리 안내")
+        st.markdown("#### 📂 중분류 목록")
         
-        categories_df = pd.DataFrame([
-            {'코드': k, '카테고리명': v} for k, v in CATEGORIES.items()
+        cat_df = pd.DataFrame([
+            {'코드': k, '중분류명': v} for k, v in CATEGORIES.items()
         ])
         
         col1, col2 = st.columns(2)
-        half_point = len(categories_df) // 2
+        mid = len(cat_df) // 2
         
         with col1:
-            st.dataframe(categories_df[:half_point], hide_index=True, use_container_width=True)
+            st.dataframe(cat_df[:mid], hide_index=True, use_container_width=True)
         with col2:
-            st.dataframe(categories_df[half_point:], hide_index=True, use_container_width=True)
+            st.dataframe(cat_df[mid:], hide_index=True, use_container_width=True)
 
-# 푸터
-def show_footer():
-    """푸터 표시"""
-    st.markdown("---")
-    st.markdown(
-        """
-        <div style='text-align: center; color: gray; font-size: 0.9em; padding: 1rem 0;'>
-        🏪 <strong>GS25 편의점 재고관리 시스템</strong> | 
-        Made with ❤️ using Streamlit & Plotly | 
-        버전 3.0.0 (AI 분석 기능 포함)
+# ================================
+# 메인 애플리케이션
+# ================================
+
+def main():
+    """메인 애플리케이션"""
+    try:
+        init_session()
+        
+        render_header()
+        render_sidebar()
+        
+        # 페이지 라우팅
+        menu = st.session_state.current_menu
+        
+        if menu == "🏠 대시보드":
+            show_dashboard()
+        elif menu == "📦 재고관리":
+            show_inventory_management()
+        elif menu == "📁 파일업로드":
+            show_file_upload()
+        elif menu == "✏️ 상품관리":
+            show_product_management()
+        elif menu == "📊 데이터분석":
+            show_data_analysis()
+        elif menu == "🎯 발주관리":
+            show_order_management()
+        elif menu == "💾 시스템관리":
+            show_system_management()
+        
+        # 푸터
+        st.markdown("---")
+        st.markdown("""
+        <div style='text-align: center; color: #888; font-size: 0.9em; padding: 1rem;'>
+            🏪 <strong>GS25 편의점 재고관리 시스템</strong> | 
+            중분류 기반 AI 재고 최적화 | 
+            버전 4.1.0
         </div>
-        """, 
-        unsafe_allow_html=True
-    )
+        """, unsafe_allow_html=True)
+        
+    except Exception as e:
+        logger.error(f"Application error: {e}")
+        st.error(f"시스템 오류: {e}")
+        if st.button("🔄 새로고침"):
+            st.rerun()
 
 if __name__ == "__main__":
-    try:
-        main()
-        show_footer()
-    except Exception as e:
-        st.error(f"시스템 오류가 발생했습니다: {e}")
-        st.error("페이지를 새로고침하거나 관리자에게 문의하세요.")
-        if st.button("🔄 페이지 새로고침"):
-            st.rerun()
+    main()
